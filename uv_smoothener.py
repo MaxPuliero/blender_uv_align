@@ -19,7 +19,7 @@
 bl_info = {
     'name': "Aligning UV-coords",
     'author': "Mathias Weitz",
-    'version': (1, 0, 0),
+    'version': (1, 0, 2),
     'blender': (2, 6, 4),
     'api': 51206,
     'location': "IMAGE_EDITOR > UI",
@@ -28,10 +28,37 @@ bl_info = {
     
 import bpy 
 from bpy.props import *
+import bmesh
 import math 
 import mathutils 
 from math import pi 
 from mathutils import Vector, Matrix
+
+def debug_del():
+	for w in bpy.context.scene.objects:
+		if w.name[0:9] == "textdebug":
+			bpy.context.scene.objects.unlink(w)
+			bpy.data.objects.remove(w)
+	
+def debug_show(origin,text):
+	ft = bpy.data.curves.new('mytext','FONT')
+	ft.body = text
+	ft.size = 0.1
+	ft.shear = 0
+	ft.align = 'CENTER'
+	ft.resolution_u = 2
+	gr = bpy.data.objects.new("textdebug",ft)
+	gr.location = Vector(origin)
+	target = bpy.data.objects["Camera"]
+	cns = gr.constraints.new("TRACK_TO")
+	cns.name = "MTrack"
+	cns.target = target
+	cns.track_axis = 'TRACK_Z'
+	cns.up_axis = 'UP_Y'
+	cns.owner_space = 'LOCAL'
+	cns.target_space = 'WORLD'
+	bpy.context.scene.objects.link(gr)    
+
 
 class thickface(object):
     __slots__= "v", "uv", "no", "area", "edge_keys"
@@ -122,9 +149,9 @@ class UVTest(bpy.types.Operator):
                 v0 = me.vertices[iv0]
                 v1 = me.vertices[iv1]
                 if v0.select:
-                    markedUV[face.loop_indices[ii]] = iv0
+                    markedUV[face.loop_indices[uvi0]] = iv0
                 if v1.select:
-                    markedUV[face.loop_indices[iip]] = iv1
+                    markedUV[face.loop_indices[uvi1]] = iv1
                 if v0.select and v1.select:
                     k = (iv0,iv1,face.loop_indices[uvi0],face.loop_indices[uvi1])
                     edges.append(k)
@@ -147,6 +174,7 @@ class UVTest(bpy.types.Operator):
         #print (vert2vert)
         
         # sorting the verts along the edges
+        # start
         vertsOrder = []
         for vi, vin in vert2vert.items():
             if len(vin) == 1:
@@ -225,9 +253,13 @@ class UVTest(bpy.types.Operator):
         else:
             error = 3
             
+        #for uv in markedUV:
+        #    print ("uv", uv, markedUV[uv],uv_layer[uv].uv)
+            
         if 0 < error:
             bpy.ops.error.message('INVOKE_DEFAULT', message = "Something wrong, maybe single line couldn't found")   
         else:
+            # ein nonManifold bedeutet, daß die Linie nicht an der Kante sitzt
             nonManifold = (0 < len(uvEdgeOrder[1]))
             uv = [0,0]
             uv_old = [0,0]
@@ -263,6 +295,8 @@ class UVRound(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        print ("****")
+        #debug_show((0,0,0), 'Textc')
         active = bpy.context.active_object
         bpy.ops.object.mode_set(mode='OBJECT')
         interval = int(context.scene.uv_interval)
@@ -273,6 +307,7 @@ class UVRound(bpy.types.Operator):
                 iv = face.vertices[i]
                 v = me.vertices[iv]
                 if v.select:
+                    #print (face.index, iv, face.loop_indices[i])
                     uv = uv_layer[face.loop_indices[i]].uv
                     #print (i,iv, face.loop_indices[i], uv.x, uv.y)
                     uv.x = round(interval * uv.x) / interval
@@ -280,7 +315,117 @@ class UVRound(bpy.types.Operator):
             
         bpy.ops.object.mode_set(mode='EDIT')
         return {'FINISHED'}
-            
+
+class UVTessellate(bpy.types.Operator):
+    '''uv tessellate'''
+    bl_idname = 'uv.tessellate'
+    bl_label = 'uvtessellate'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        print ("****")
+        #debug_show((0,0,0), 'Textc')
+        active = bpy.context.active_object
+        bpy.ops.object.mode_set(mode='OBJECT')
+        interval = int(context.scene.uv_interval)
+        hideFaces = context.scene.hideFaces
+        me = active.data
+        uv_layer = me.uv_layers.active.data
+        # tri_elem enthält eine Liste aller Dreiecke 
+        # in der Form [[vert_0,vert_1,vert_2],[uv_0,uv_1,uv_2]]
+        tri_elem = []
+        for face in me.polygons:
+            if face.select:
+                face.hide=hideFaces
+                #print ()
+                #print (face.index, len(face.vertices), len(face.loop_indices))
+                vectors=[]
+                for uvi in face.loop_indices:
+                    vectors.append(Vector((uv_layer[uvi].uv.x,uv_layer[uvi].uv.y,0.0)))
+                tri_tess_list = mathutils.geometry.tessellate_polygon([vectors]) 
+                for tri in tri_tess_list:
+                    #print (tri, uv_layer[tri[0]].uv, uv_layer[tri[1]].uv, uv_layer[tri[2]].uv)
+                    tri_verts = []
+                    tri_uv = []
+                    for i in tri:
+                        tri_verts.append(face.vertices[i])
+                        tri_uv.append(face.loop_indices[i])
+                    tri_elem.append([tri_verts,tri_uv])
+        #print ("Tris", tri_elem)
+        
+        k = int(context.scene.uv_tessellate)
+        count = 0
+        acc = 5e-6
+        vertices = {}
+        for i1 in range(k+1):
+            #self.report({"INFO"}, str(i1))
+            for i2 in range(k+1):
+                x = i1 / k
+                y = i2 / k
+                #print ('********** ',x,y)
+                p = False
+                for tri in tri_elem:
+                    v0 = uv_layer[tri[1][0]].uv
+                    v1 = uv_layer[tri[1][1]].uv
+                    v2 = uv_layer[tri[1][2]].uv
+                    w1 = v1-v0
+                    w2 = v2-v0
+                    w0 = Vector((x,y)) - v0
+                    det = w1.x*w2.y - w1.y*w2.x
+                    detx = w0.x*w2.y - w0.y*w2.x
+                    dety = w1.x*w0.y - w1.y*w0.x
+                    if det != 0:
+                        solu_x = detx / det
+                        solu_y = dety / det
+                        if -acc <= solu_x and -acc <= solu_y and solu_x+solu_y <= 1.0+acc:
+                            #bm = mathutils.geometry.intersect_point_tri_2d(Vector((x,y)),v0,v1,v2)
+                            #print (solu_x,solu_y,' = ',v0.x,v0.y,',',v1.x,v1.y,',',v2.x,v2.y,',')
+                            ve0 = me.vertices[tri[0][0]].co
+                            ve1 = me.vertices[tri[0][1]].co
+                            ve2 = me.vertices[tri[0][2]].co
+                            we1 = ve1-ve0
+                            we2 = ve2-ve0
+                            p = ve0 + solu_x * we1 + solu_y * we2
+                if p != False:
+                    if i1 not in vertices:
+                        vertices[i1] = {}
+                    vertices[i1][i2]=p
+                    count += 1
+        
+        print ("count",count)
+        start = len(me.vertices)
+        me.vertices.add(count)
+        c = 0
+        for i1 in vertices:
+            for i2 in vertices[i1]:
+                ve = me.vertices[start+c]
+                ve.co = vertices[i1][i2]
+                vertices[i1][i2] = ve
+                c += 1
+        
+        bm = bmesh.new() 
+        bm.from_mesh(me) 
+        for i1 in vertices.keys():
+            if 0 < len(vertices[i1]):
+                for i2 in vertices[i1].keys():
+                    verts = []
+                    if i1 in vertices and i2 in vertices[i1]:
+                        verts.append(bm.verts[vertices[i1][i2].index])
+                    if i1 in vertices and i2+1 in vertices[i1]:
+                        verts.append(bm.verts[vertices[i1][i2+1].index])
+                    if i1+1 in vertices and i2+1 in vertices[i1+1]:
+                        verts.append(bm.verts[vertices[i1+1][i2+1].index])
+                    if i1+1 in vertices and i2 in vertices[i1+1]:
+                        verts.append(bm.verts[vertices[i1+1][i2].index])
+                    if 2 < len(verts):
+                        #print (verts)
+                        bm.faces.new(verts)
+        bm.to_mesh(me)
+        bm.free()
+
+        me.update()    
+        bpy.ops.object.mode_set(mode='EDIT')
+        return {'FINISHED'}            
     
 
 class VIEW3D_PT_tools_UVTest(bpy.types.Panel):
@@ -311,16 +456,39 @@ class VIEW3D_PT_tools_UVTest(bpy.types.Panel):
 
         #col = colm.column(align=True)
         #col.operator("uv.linealign", text="Round")
+        
+        colm1 = layout.column(align=True)
+        colm2 = colm1.column(align=True)
+        row2 = colm2.split(0.25)
+        w = row2.prop(context.scene, "uv_tessellate")
+        row2.operator("uv.tessellate", text="remesh from UV")
+        
+        colm3 = colm1.column(align=True)
+        row3 = colm3.row(align=True)
+        row3.prop(context.scene, "hideFaces")
+        
 
 classes = [MessageOperator, OkOperator,
     UVTest,
     UVRound,
+    UVTessellate,
     VIEW3D_PT_tools_UVTest]   
                     
 def register():
     #bpy.utils.register_module(__name__)
     for c in classes:
         bpy.utils.register_class(c)
+    bpy.types.Scene.uv_tessellate = EnumProperty(
+		name="",
+		description="mesh size on UV-Editor",
+		items=[("256","1","1"),
+			   ("128","2","2"),
+			   ("64","4","4"),
+			   ("32","8","8"),
+			   ("16","16","16"),
+			   ("8","32","32"),
+			  ],
+		default='32')
     bpy.types.Scene.uv_interval = EnumProperty(
 		name="",
 		description="uv rounding factor",
@@ -331,7 +499,12 @@ def register():
 			   ("16","16","16"),
 			   ("8","32","32"),
 			  ],
-		default='16')
+		default="8")
+    bpy.types.Scene.hideFaces = BoolProperty(
+            name="Hide Faces",
+            description="Hide the selected Faces",
+            default=True,
+            )
    
 def unregister():
     #bpy.utils.unregister_module(__name__)
