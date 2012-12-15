@@ -19,9 +19,9 @@
 bl_info = {
     'name': "Aligning UV-coords",
     'author': "Mathias Weitz",
-    'version': (1, 0, 2),
-    'blender': (2, 6, 4),
-    'api': 51206,
+    'version': (1, 0, 3),
+    'blender': (2, 6, 5),
+    'api': 52859,
     'location': "IMAGE_EDITOR > UI",
     'description': "various tricks on UV",
     'category': 'UV'}
@@ -259,7 +259,7 @@ class UVTest(bpy.types.Operator):
         if 0 < error:
             bpy.ops.error.message('INVOKE_DEFAULT', message = "Something wrong, maybe single line couldn't found")   
         else:
-            # ein nonManifold bedeutet, daß die Linie nicht an der Kante sitzt
+            # ein nonManifold bedeutet, das die Linie nicht an der Kante sitzt
             nonManifold = (0 < len(uvEdgeOrder[1]))
             uv = [0,0]
             uv_old = [0,0]
@@ -331,8 +331,8 @@ class UVTessellate(bpy.types.Operator):
         hideFaces = context.scene.hideFaces
         me = active.data
         uv_layer = me.uv_layers.active.data
-        # tri_elem enthält eine Liste aller Dreiecke 
-        # in der Form [[vert_0,vert_1,vert_2],[uv_0,uv_1,uv_2]]
+        # tri_elem contains a list of all triangles
+        # struct like [[vert_0,vert_1,vert_2],[uv_0,uv_1,uv_2]]
         tri_elem = []
         for face in me.polygons:
             if face.select:
@@ -425,8 +425,75 @@ class UVTessellate(bpy.types.Operator):
 
         me.update()    
         bpy.ops.object.mode_set(mode='EDIT')
-        return {'FINISHED'}            
-    
+        return {'FINISHED'}        
+        
+class SelectShortest(bpy.types.Operator):
+    '''uv select shortest'''
+    bl_idname = 'uv.selectshortest'
+    bl_label = 'selectshortest'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        print ("****")
+        #debug_show((0,0,0), 'Textc')
+        active = bpy.context.active_object
+        bpy.ops.object.mode_set(mode='OBJECT')
+        interval = int(context.scene.uv_interval)
+        hideFaces = context.scene.hideFaces
+        me = active.data
+        vert2vert = {}
+        for i in range(len(me.edges)):
+            edge = me.edges[i]
+            if not edge.hide:
+                #print (edge.vertices[0])
+                v0 = active.data.vertices[edge.vertices[0]]
+                v1 = active.data.vertices[edge.vertices[1]]
+                d = (v0.co - v1.co).length
+            
+                if v0.index not in vert2vert:
+                    vert2vert[v0.index] = {}
+                if v1.index not in vert2vert[v0.index]:
+                    vert2vert[v0.index][v1.index] = d           
+                if v1.index not in vert2vert:
+                    vert2vert[v1.index] = {}
+                if v0.index not in vert2vert[v1.index]:
+                    vert2vert[v1.index][v0.index] = d
+                
+        verts = {}
+        start=0
+        second=0
+        for i in range(len(me.vertices)):
+            vert = me.vertices[i]
+            if not vert.hide:
+                verts[vert.index] = {'d': 10000.0, 'path':[]}  
+                if vert.select:
+                    second = start
+                    start = i
+        if 0 < start and 0 < second:
+            search = [start]
+            c = 500000
+            verts[start]['d'] = 0.0
+            while 0 < len(search) and 0<c:
+                c -= 1
+                next = search.pop(0)
+                d = verts[next]['d']
+                #print ('***', next)
+                for nvert in vert2vert[next].keys():
+                    dp=vert2vert[next][nvert]
+                    if d + dp < verts[nvert]['d']:
+                        search.append(nvert)
+                        verts[nvert]['d'] = d + dp
+                        verts[nvert]['path'] = [next] + verts[next]['path']
+                #print (search)
+            for v in verts[second]['path']:
+                #print (v)
+                me.vertices[v].select = True
+            
+        #print (vert2vert)
+        #print (verts)
+        me.update()    
+        bpy.ops.object.mode_set(mode='EDIT')
+        return {'FINISHED'}          
 
 class VIEW3D_PT_tools_UVTest(bpy.types.Panel):
     bl_space_type = 'IMAGE_EDITOR'
@@ -442,18 +509,21 @@ class VIEW3D_PT_tools_UVTest(bpy.types.Panel):
         layout = self.layout
 
         colm = layout.column(align=True)
-        col = colm.column(align=True)
-        col.operator("uv.linealign", text="Line align")
-        
-        colm = layout.column(align=True)
-        
         row = colm.split(0.25)
         #row.split = 0.15
         w = row.prop(context.scene, "uv_interval")
         #row.split(percentage=0.15)
         #w.alignment = 'RIGHT'
         row.operator("uv.round", text="Round")
+        
+        colm = layout.column(align=True)
+        col = colm.column(align=True)
+        col.operator("uv.selectshortest", text="Select Shortest")
 
+        colm = layout.column(align=True)
+        col = colm.column(align=True)
+        col.operator("uv.linealign", text="Line align")
+        
         #col = colm.column(align=True)
         #col.operator("uv.linealign", text="Round")
         
@@ -472,6 +542,7 @@ classes = [MessageOperator, OkOperator,
     UVTest,
     UVRound,
     UVTessellate,
+    SelectShortest,
     VIEW3D_PT_tools_UVTest]   
                     
 def register():
